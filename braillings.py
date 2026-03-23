@@ -25,6 +25,15 @@ _ASSETS = _data["assets"]
 del _data
 from braillings_font import FONT, CHAR_H, CHAR_GAP, text_width, stamp_text
 
+STANDALONE_LABELS = [
+    ("Several Species of Small Furry Animals Gathered Together in a Cave", None),
+    ("Careful with That Axe, Eugene", None),
+    ("Alan's Psychedelic Breakfast", None),
+    ("Set the Controls for the Heart of the Sun", None),
+    ("Is There Anybody Out There?", None),
+    ("Come In Number 51, Your Time Is Up", None),
+]
+
 LEVEL_WIDTH = 1584
 LEVEL_HEIGHT = 160
 
@@ -243,15 +252,15 @@ def composite_level(world, header, objects, terrain_pieces, steel,
 # ── Helper functions ─────────────────────────────────────────────────────────
 
 def load_config():
-    """Read ~/.config/lemmings-pick/config. Returns list of (display_name, full_path).
-    Format: one path per line. Optional 'display_name|path' to override display name."""
-    config_path = os.path.expanduser("~/.config/lemmings-pick/config")
+    """Read ~/.config/braillings/config. Returns list of (display_name, full_path).
+    Falls back to Pink Floyd song labels in standalone mode (path=None)."""
+    config_path = os.path.expanduser("~/.config/braillings/config")
     if not os.path.exists(config_path):
-        return []
+        return list(STANDALONE_LABELS)
     with open(config_path, "r") as f:
         lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
     if not lines:
-        return []
+        return list(STANDALONE_LABELS)
     # Parse lines: "name|path" or just "path"
     explicit = []
     auto_paths = []
@@ -1191,8 +1200,7 @@ def main():
     if not config:
         try:
             with open("/dev/tty", "w") as t:
-                t.write("lemmings-pick: no config file found at ~/.config/lemmings-pick/config\n")
-                t.write("Create it with one directory path per line.\n")
+                t.write("braillings: config file is empty. Add entries or delete it for standalone mode.\n")
         except OSError:
             pass
         return None
