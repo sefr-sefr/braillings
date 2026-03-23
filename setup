@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Braillings setup — interactive installer for directory picker mode.
+# Re-runnable (idempotent). Run: ./setup
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BRAILLINGS_PY="$SCRIPT_DIR/braillings.py"
+CONFIG_DIR="$HOME/.config/braillings"
+CONFIG_FILE="$CONFIG_DIR/config"
+OLD_CONFIG="$HOME/.config/lemmings-pick/config"
+MARKER_START="# --- Braillings ---"
+MARKER_END="# --- End Braillings ---"
+
+# Colors
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+CYAN='\033[36m'
+RESET='\033[0m'
+
+print_header() {
+    echo ""
+    echo -e "${BOLD}Braillings Setup${RESET}"
+    echo -e "${DIM}Terminal directory picker with Lemmings diorama${RESET}"
+    echo ""
+}
+
+ask_yn() {
+    local prompt="$1" default="${2:-n}"
+    local yn
+    if [[ "$default" == "y" ]]; then
+        read -rp "$prompt [Y/n] " yn
+        yn="${yn:-y}"
+    else
+        read -rp "$prompt [y/N] " yn
+        yn="${yn:-n}"
+    fi
+    [[ "$yn" =~ ^[Yy] ]]
+}
+
+check_prerequisites() {
+    if ! command -v python3 &>/dev/null; then
+        echo "Error: Python 3 is required but not found."
+        echo "Install it via: brew install python3 (macOS) or your package manager."
+        exit 1
+    fi
+    local pyver
+    pyver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    echo -e "Python $pyver found ${GREEN}✓${RESET}"
+
+    if [[ ! -f "$BRAILLINGS_PY" ]]; then
+        echo "Error: braillings.py not found at $BRAILLINGS_PY"
+        echo "Run this script from the braillings repo directory."
+        exit 1
+    fi
+}
+
+check_legacy_config() {
+    if [[ -f "$OLD_CONFIG" ]]; then
+        echo ""
+        echo -e "${YELLOW}Found old config at $OLD_CONFIG${RESET}"
+        if ask_yn "Migrate entries to new location?"; then
+            mkdir -p "$CONFIG_DIR"
+            cp "$OLD_CONFIG" "$CONFIG_FILE"
+            echo -e "Migrated ${GREEN}✓${RESET}"
+        fi
+    fi
+}
+
+ask_launch_mode() {
+    echo ""
+    echo -e "${BOLD}How do you want to use Braillings?${RESET}"
+    echo ""
+    echo "  a) Launch on every new terminal"
+    echo "  b) Run manually with 'braillings' command"
+    echo "  c) Just the fun experience (Pink Floyd mode, no directory switching)"
+    echo ""
+    local choice
+    while true; do
+        read -rp "Choose [a/b/c]: " choice
+        case "$choice" in
+            a|A) LAUNCH_MODE="terminal"; return ;;
+            b|B) LAUNCH_MODE="manual"; return ;;
+            c|C) LAUNCH_MODE="standalone"; return ;;
+            *) echo "Please enter a, b, or c." ;;
+        esac
+    done
+}
+
+scan_history_for_dirs() {
+    local -a history_files=()
+
+    [[ -f "$HOME/.bash_history" ]] && history_files+=("$HOME/.bash_history")
+    [[ -f "$HOME/.zsh_history" ]] && history_files+=("$HOME/.zsh_history")
+
+    if [[ ${#history_files[@]} -eq 0 ]]; then
+        echo "No shell history files found."
+        return
+    fi
+
+    echo -e "${DIM}Scanning shell history for frequently visited directories...${RESET}"
+
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    for hf in "${history_files[@]}"; do
+        sed -n 's/^.*cd  *\(~\{0,1\}[^ ;|&]*\).*/\1/p' "$hf"
+    done | sort | uniq -c | sort -rn | head -20 > "$tmpfile"
+
+    local count dir expanded i=0
+    HISTORY_DIRS=()
+    while read -r count dir; do
+        expanded="${dir/#\~/$HOME}"
+        if [[ -d "$expanded" && "$expanded" != "$HOME" ]]; then
+            HISTORY_DIRS+=("$dir")
+            i=$((i + 1))
+            [[ $i -ge 15 ]] && break
+        fi
+    done < "$tmpfile"
+    rm -f "$tmpfile"
+
+    if [[ ${#HISTORY_DIRS[@]} -eq 0 ]]; then
+        echo "No frequently visited directories found in history."
+    fi
+}
+
+ask_destinations() {
+    echo ""
+    echo -e "${BOLD}Configure destinations${RESET}"
+    echo ""
+
+    SELECTED_DIRS=()
+
+    if ask_yn "Suggest directories from your shell history? (reads cd commands only)"; then
+        scan_history_for_dirs
+        if [[ ${#HISTORY_DIRS[@]} -gt 0 ]]; then
+            echo ""
+            echo "Found these directories you visit often:"
+            echo ""
+            for i in "${!HISTORY_DIRS[@]}"; do
+                printf "  %2d) %s\n" $((i + 1)) "${HISTORY_DIRS[$i]}"
+            done
+            echo ""
+            echo "Enter numbers to include (comma-separated), or 'none' to skip:"
+            local selection
+            read -rp "> " selection
+            if [[ "$selection" != "none" ]]; then
+                IFS=',' read -ra picks <<< "$selection"
+                for pick in "${picks[@]}"; do
+                    pick=$(echo "$pick" | tr -d ' ')
+                    if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#HISTORY_DIRS[@]} )); then
+                        SELECTED_DIRS+=("${HISTORY_DIRS[$((pick - 1))]}")
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    echo ""
+    echo "Add directories manually (one per line, empty line to finish):"
+    echo -e "${DIM}Format: /path/to/dir  or  display_name|/path/to/dir${RESET}"
+    while true; do
+        read -rp "> " entry
+        [[ -z "$entry" ]] && break
+        SELECTED_DIRS+=("$entry")
+    done
+
+    if [[ ${#SELECTED_DIRS[@]} -eq 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}No destinations selected. You can re-run ./setup later to add them.${RESET}"
+        LAUNCH_MODE="standalone"
+    fi
+}
+
+ask_claude_integration() {
+    echo ""
+    if ask_yn "Start Claude in the selected directory?"; then
+        CLAUDE_ENABLED=true
+    else
+        CLAUDE_ENABLED=false
+    fi
+}
+
+detect_shells() {
+    SHELL_FILES=()
+    local current_shell
+    current_shell="$(basename "$SHELL")"
+
+    if [[ "$current_shell" == "bash" ]] || [[ -f "$HOME/.bashrc" ]]; then
+        SHELL_FILES+=("$HOME/.bashrc")
+    fi
+    if [[ "$current_shell" == "zsh" ]] || [[ -f "$HOME/.zshrc" ]]; then
+        SHELL_FILES+=("$HOME/.zshrc")
+    fi
+
+    if [[ ${#SHELL_FILES[@]} -eq 0 ]]; then
+        echo -e "${YELLOW}Could not detect shell config files.${RESET}"
+        echo "You'll need to add the shell integration manually."
+    fi
+}
+
+generate_shell_snippet() {
+    local claude_line=""
+    if [[ "$CLAUDE_ENABLED" == "true" ]]; then
+        claude_line=$'\n        claude'
+    fi
+
+    if [[ "$LAUNCH_MODE" == "terminal" ]]; then
+        cat <<SNIPPET
+$MARKER_START
+if [[ \$- == *i* ]] && [[ -z "\$_BRAILLINGS_DONE" ]]; then
+    export _BRAILLINGS_DONE=1
+    _br_result=\$(python3 "$BRAILLINGS_PY" 2>>"\$HOME/.config/braillings/error.log")
+    if [ -n "\$_br_result" ]; then
+        cd "\$_br_result"${claude_line}
+    fi
+    unset _br_result
+fi
+$MARKER_END
+SNIPPET
+    elif [[ "$LAUNCH_MODE" == "manual" ]]; then
+        cat <<SNIPPET
+$MARKER_START
+braillings() {
+    local _br_result
+    _br_result=\$(python3 "$BRAILLINGS_PY" 2>>"\$HOME/.config/braillings/error.log")
+    if [ -n "\$_br_result" ]; then
+        cd "\$_br_result"${claude_line}
+    fi
+}
+$MARKER_END
+SNIPPET
+    fi
+}
+
+install_shell_snippet() {
+    local snippet
+    snippet="$(generate_shell_snippet)"
+
+    echo ""
+    echo -e "${BOLD}Shell integration:${RESET}"
+    echo ""
+    echo "$snippet"
+    echo ""
+
+    detect_shells
+
+    for shell_file in "${SHELL_FILES[@]}"; do
+        if ask_yn "Add this to $shell_file?"; then
+            local tmpfile
+            tmpfile=$(mktemp "${shell_file}.braillings.XXXXXX")
+
+            if [[ -f "$shell_file" ]] && grep -q "$MARKER_START" "$shell_file"; then
+                local snippet_file
+                snippet_file=$(mktemp)
+                echo "$snippet" > "$snippet_file"
+                awk -v start="$MARKER_START" -v end="$MARKER_END" -v sf="$snippet_file" '
+                    $0 == start { skip=1; while ((getline line < sf) > 0) print line; close(sf); next }
+                    $0 == end { skip=0; next }
+                    !skip { print }
+                ' "$shell_file" > "$tmpfile"
+                rm -f "$snippet_file"
+            elif [[ -f "$shell_file" ]]; then
+                cat "$shell_file" > "$tmpfile"
+                echo "" >> "$tmpfile"
+                echo "$snippet" >> "$tmpfile"
+            else
+                echo "$snippet" > "$tmpfile"
+            fi
+
+            mv "$tmpfile" "$shell_file"
+            echo -e "Updated $shell_file ${GREEN}✓${RESET}"
+        else
+            echo ""
+            echo "Add this to your shell config manually:"
+            echo ""
+            echo "$snippet"
+        fi
+    done
+}
+
+write_config() {
+    mkdir -p "$CONFIG_DIR"
+    {
+        echo "# Braillings directory picker config"
+        echo "# Format: display_name|/path/to/dir  or  /path/to/dir"
+        echo "# Edit this file or re-run ./setup to change destinations."
+        echo ""
+        for dir in "${SELECTED_DIRS[@]}"; do
+            echo "$dir"
+        done
+    } > "$CONFIG_FILE"
+    echo ""
+    echo -e "Config written to $CONFIG_FILE ${GREEN}✓${RESET}"
+}
+
+handle_standalone_mode() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo ""
+        echo "Existing config found at $CONFIG_FILE."
+        if ask_yn "Remove it to return to Pink Floyd standalone mode?"; then
+            rm "$CONFIG_FILE"
+            echo -e "Config removed ${GREEN}✓${RESET}"
+        fi
+    fi
+
+    for shell_file in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [[ -f "$shell_file" ]] && grep -q "$MARKER_START" "$shell_file"; then
+            echo "Removing Braillings block from $shell_file..."
+            local tmpfile
+            tmpfile=$(mktemp "${shell_file}.braillings.XXXXXX")
+            awk -v start="$MARKER_START" -v end="$MARKER_END" '
+                $0 == start { skip=1; next }
+                $0 == end { skip=0; next }
+                !skip { print }
+            ' "$shell_file" > "$tmpfile"
+            mv "$tmpfile" "$shell_file"
+            echo -e "Cleaned up $shell_file ${GREEN}✓${RESET}"
+        fi
+    done
+
+    echo ""
+    echo -e "${GREEN}Standalone mode active.${RESET} Run: python3 $BRAILLINGS_PY"
+}
+
+main() {
+    print_header
+    check_prerequisites
+    check_legacy_config
+    ask_launch_mode
+
+    if [[ "$LAUNCH_MODE" == "standalone" ]]; then
+        handle_standalone_mode
+        echo ""
+        echo -e "${GREEN}Done!${RESET} Enjoy the lemmings."
+        return
+    fi
+
+    ask_destinations
+
+    if [[ "$LAUNCH_MODE" == "standalone" ]]; then
+        handle_standalone_mode
+        echo ""
+        echo -e "${GREEN}Done!${RESET} Enjoy the lemmings."
+        return
+    fi
+
+    ask_claude_integration
+    install_shell_snippet
+    write_config
+
+    echo ""
+    echo -e "${GREEN}Setup complete!${RESET}"
+    if [[ "$LAUNCH_MODE" == "terminal" ]]; then
+        echo "Braillings will launch next time you open a terminal."
+    else
+        echo "Type 'braillings' to launch the directory picker."
+    fi
+    echo "Re-run ./setup any time to change settings."
+}
+
+main "$@"
