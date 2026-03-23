@@ -1042,7 +1042,11 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     buf = fcntl.ioctl(tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
     rows, cols = struct.unpack('HHHH', buf)[:2]
     tw = cols
-    th = rows - 1
+    standalone = any(path is None for _, path in config)
+    if standalone:
+        th = rows - 2  # reserve last row for hint bar
+    else:
+        th = rows - 1
     view_ph = min(th * 4, LEVEL_HEIGHT)
     th = view_ph // 4
     tw = min(tw, LEVEL_WIDTH // 2)
@@ -1073,6 +1077,13 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     # Alt screen + hidden cursor
     tty_out.write("\033[?25l\033[?1049h")
     tty_out.flush()
+
+    if standalone:
+        hint = "Run ./setup to use Braillings as a directory picker"
+        hint_col = max(1, (cols - len(hint)) // 2)
+        hint_ansi = f"\033[{rows};1H\033[2K\033[{rows};{hint_col}H\033[2m{hint}\033[0m"
+        tty_out.write(hint_ansi)
+        tty_out.flush()
 
     old_settings = termios.tcgetattr(tty_fd)
     try:
@@ -1211,6 +1222,11 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
 
             tty_out.write("".join(out))
             tty_out.flush()
+
+            # Redraw hint bar every frame (dirty-cell updates may overwrite it)
+            if standalone:
+                tty_out.write(hint_ansi)
+                tty_out.flush()
 
             # Exit after all lemmings are done exploding
             if selected is not None and alive_count == 0:
