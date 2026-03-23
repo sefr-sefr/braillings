@@ -327,36 +327,78 @@ def build_ability_pool(skills):
     return pool
 
 
-def stamp_menu(world, config, entrance_x, walk_surface_y, water=None):
+def wrap_text(text, max_width, indent=0):
+    """Wrap text at word boundaries to fit within max_width pixels.
+    Returns list of (indent_px, line_text) tuples.
+    First line has indent=0, continuation lines have the given indent."""
+    words = text.split(' ')
+    lines = []
+    current_line = ''
+    for word in words:
+        candidate = f"{current_line} {word}".strip()
+        line_indent = indent if lines else 0
+        if text_width(candidate) + line_indent > max_width and current_line:
+            lines.append((indent if len(lines) > 0 else 0, current_line))
+            current_line = word
+        else:
+            current_line = candidate
+    if current_line:
+        lines.append((indent if len(lines) > 0 else 0, current_line))
+    return lines
+
+
+def stamp_menu(world, config, entrance_x, walk_surface_y, water=None, term_cols=80):
     """Stamp menu text + halo into world. Returns set of text pixel coords."""
+    if not config:
+        return set(), (0, 0, 0, 0)
+
     line_gap = 3
     padding = 4
-    labels = [m[0] for m in config]
-    numbered = [f"{i + 1}. {label}" for i, label in enumerate(labels)]
-    menu_w = max(text_width(l) for l in numbered) + padding * 2
-    menu_h = len(numbered) * (CHAR_H + line_gap) - line_gap + padding * 2
+    max_text_width = (term_cols * 2) - 40  # viewport pixel width minus margin
+
+    # Build wrapped lines: list of (indent_px, text)
+    all_lines = []
+    for i, (label, _path) in enumerate(config):
+        prefix = f"{i + 1}. "
+        prefix_width = text_width(prefix)
+        first_line_text = prefix + label
+        if text_width(first_line_text) <= max_text_width:
+            all_lines.append((0, first_line_text))
+        else:
+            # Wrap: first line has the prefix, continuations are indented
+            wrapped = wrap_text(label, max_text_width - prefix_width, indent=prefix_width)
+            for j, (indent, line_text) in enumerate(wrapped):
+                if j == 0:
+                    all_lines.append((0, prefix + line_text))
+                else:
+                    all_lines.append((indent, line_text))
+
+    menu_h = len(all_lines) * (CHAR_H + line_gap) - line_gap + padding * 2
     menu_x = entrance_x + 60
     menu_y = max(2, walk_surface_y - padding)
     menu_y = min(menu_y, LEVEL_HEIGHT - menu_h - 2)
 
     # Avoid water zones — shift menu right if overlapping
+    menu_w_estimate = max(text_width(t) + ind for ind, t in all_lines) + padding * 2
     if water:
-        for _ in range(20):  # max 20 attempts
+        for _ in range(20):
             overlaps = False
             for wz in water:
-                if (menu_x < wz["x"] + wz["w"] and menu_x + menu_w > wz["x"]
+                if (menu_x < wz["x"] + wz["w"] and menu_x + menu_w_estimate > wz["x"]
                         and menu_y < wz["y"] + wz["h"] + 6 and menu_y + menu_h > wz["y"]):
                     overlaps = True
-                    menu_x = wz["x"] + wz["w"] + 10  # shift past this water
+                    menu_x = wz["x"] + wz["w"] + 10
                     break
             if not overlaps:
                 break
 
+    menu_w = menu_w_estimate
+
     text_color = (240, 240, 0)
     all_text_pixels = set()
-    for i, label in enumerate(numbered):
+    for i, (indent, label) in enumerate(all_lines):
         ty = menu_y + padding + i * (CHAR_H + line_gap)
-        cx = menu_x + padding
+        cx = menu_x + padding + indent
         pixels = stamp_text(world, cx, ty, label, text_color)
         all_text_pixels |= pixels
 
@@ -1009,12 +1051,8 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     level_tw = LEVEL_WIDTH // 2
     level_th = LEVEL_HEIGHT // 4
 
-    # Compute menu center for viewport
-    labels = [m[0] for m in config]
-    numbered = [f"{i + 1}. {label}" for i, label in enumerate(labels)]
-    padding = 4
-    menu_w = max(text_width(l) for l in numbered) + padding * 2
-    menu_x = entrances[0]["x"] + 60
+    # Use menu rect from stamp_menu for viewport centering
+    menu_x, _menu_y, menu_w, _menu_h = menu_rect
 
     MAX_LEMMINGS = header["num_lemmings"]
     SPAWN_INTERVAL = max(10, 100 - header["release_rate"])
@@ -1255,7 +1293,16 @@ def main():
             walk_surface_y = y - 1
             break
 
-    text_pixels, menu_rect = stamp_menu(world, config, entrances[0]["x"], walk_surface_y, water)
+    # Get terminal width for menu wrapping
+    try:
+        _tty_fd_tmp = os.open("/dev/tty", os.O_RDONLY)
+        _buf = fcntl.ioctl(_tty_fd_tmp, termios.TIOCGWINSZ, b'\x00' * 8)
+        _term_cols = struct.unpack('HHHH', _buf)[1]
+        os.close(_tty_fd_tmp)
+    except OSError:
+        _term_cols = 80
+
+    text_pixels, menu_rect = stamp_menu(world, config, entrances[0]["x"], walk_surface_y, water, _term_cols)
     text_pixel_coords = list(text_pixels)
     world.pre_render_braille()
 
