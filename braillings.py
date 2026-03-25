@@ -812,8 +812,6 @@ def stamp_objects(world, game_tick, palette, menu_rect=None):
             fi = 0
         frame = frames[fi]
         ox, oy = obj["x"], obj["y"]
-        if obj["obj_id"] == 0:
-            oy += 4  # exit sprite sits 4px above terrain in raw DOS data
         for py in range(obj["h"]):
             for px in range(obj["w"]):
                 idx = frame[py][px]

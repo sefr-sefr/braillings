@@ -2,6 +2,8 @@
 
 DOS Lemmings in your terminal, rendered in braille characters. Watch lemmings spawn, navigate levels autonomously, and interact with terrain. Pan with arrow keys, quit with Esc.
 
+![Braillings diorama](assets/diorama.gif)
+
 ## Quick Start
 
 ```bash
@@ -15,6 +17,8 @@ No dependencies beyond Python 3.
 ## Directory Launcher (optional)
 
 Braillings can also work as a directory picker — menu items become platforms that lemmings walk on. Pick a destination, watch them all explode, and land in that directory.
+
+![Braillings launcher](assets/launcher.gif)
 
 ```bash
 python3 braillings-launcher.py     # standalone with fun labels
