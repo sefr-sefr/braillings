@@ -12,11 +12,6 @@ from braillings_font import text_width, stamp_text, CHAR_H, CHAR_GAP
 
 STANDALONE_LABELS = [
     ("Several Species of Small Furry Animals Gathered Together in a Cave", None),
-    ("Careful with That Axe, Eugene", None),
-    ("Alan's Psychedelic Breakfast", None),
-    ("Set the Controls for the Heart of the Sun", None),
-    ("Is There Anybody Out There?", None),
-    ("Come In Number 51, Your Time Is Up", None),
 ]
 
 
@@ -189,7 +184,7 @@ def main():
     # Build after_frame callback (hint bar in standalone mode)
     if standalone:
         def make_after_frame():
-            hint = "Run ./setup-launcher to use Braillings as a directory picker"
+            hint = "Demo mode — run ./setup-launcher to configure directories"
             state = {"ansi": None}
             def after_frame(tty_out):
                 if state["ansi"] is None:
