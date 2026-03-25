@@ -5,7 +5,7 @@ set -euo pipefail
 # Re-runnable (idempotent). Run: ./setup
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BRAILLINGS_PY="$SCRIPT_DIR/braillings.py"
+BRAILLINGS_PY="$SCRIPT_DIR/braillings-launcher.py"
 CONFIG_DIR="$HOME/.config/braillings"
 CONFIG_FILE="$CONFIG_DIR/config"
 OLD_CONFIG="$HOME/.config/lemmings-pick/config"
@@ -75,7 +75,7 @@ ask_launch_mode() {
     echo ""
     echo "  a) Launch on every new terminal"
     echo "  b) Run manually with 'braillings' command"
-    echo "  c) Just the fun experience (Pink Floyd mode, no directory switching)"
+    echo "  c) Just watch the lemmings (screensaver mode)"
     echo ""
     local choice
     while true; do
@@ -322,7 +322,7 @@ handle_standalone_mode() {
     done
 
     echo ""
-    echo -e "${GREEN}Standalone mode active.${RESET} Run: python3 $BRAILLINGS_PY"
+    echo -e "${GREEN}Standalone mode active.${RESET} Run: python3 $SCRIPT_DIR/braillings.py"
 }
 
 main() {

@@ -1,10 +1,8 @@
 """
-Braillings — a terminal directory picker rendered as a DOS Lemmings diorama.
-Renders levels in braille characters with ANSI truecolor. Menu items become
-solid platforms that lemmings walk on. Press a number key to select.
-Standalone mode: Pink Floyd songs as fun labels (no config needed).
-Directory mode: real paths via ~/.config/braillings/config.
-All rendering to /dev/tty; stdout reserved for the selected path only.
+Braillings — a terminal diorama rendered as a DOS Lemmings level.
+Renders levels in braille characters with ANSI truecolor.
+Watch lemmings navigate terrain, use abilities, and find the exit.
+Game engine + diorama viewer. No menus, no config, no launcher logic.
 """
 import os, sys, time, struct, tty, termios, select, random, fcntl
 
@@ -23,17 +21,6 @@ PARTICLE_COLORS = _data["particle_colors"]
 _LEVELS = _data["levels"]
 _ASSETS = _data["assets"]
 del _data
-from braillings_font import FONT, CHAR_H, CHAR_GAP, text_width, stamp_text
-
-STANDALONE_LABELS = [
-    ("Several Species of Small Furry Animals Gathered Together in a Cave", None),
-    ("Careful with That Axe, Eugene", None),
-    ("Alan's Psychedelic Breakfast", None),
-    ("Set the Controls for the Heart of the Sun", None),
-    ("Is There Anybody Out There?", None),
-    ("Come In Number 51, Your Time Is Up", None),
-]
-
 LEVEL_WIDTH = 1584
 LEVEL_HEIGHT = 160
 
@@ -251,49 +238,6 @@ def composite_level(world, header, objects, terrain_pieces, steel,
 
 # ── Helper functions ─────────────────────────────────────────────────────────
 
-def load_config():
-    """Read ~/.config/braillings/config. Returns list of (display_name, full_path).
-    Falls back to Pink Floyd song labels in standalone mode (path=None)."""
-    config_path = os.path.expanduser("~/.config/braillings/config")
-    if not os.path.exists(config_path):
-        return list(STANDALONE_LABELS)
-    with open(config_path, "r") as f:
-        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-    if not lines:
-        return list(STANDALONE_LABELS)
-    # Parse lines: "name|path" or just "path"
-    explicit = []
-    auto_paths = []
-    for line in lines:
-        if "|" in line:
-            name, path = line.split("|", 1)
-            explicit.append((name.strip(), path.strip()))
-        else:
-            auto_paths.append(line)
-    # Derive display names for paths without explicit names
-    if auto_paths:
-        expanded = [os.path.expanduser(p) for p in auto_paths]
-        if len(expanded) == 1:
-            auto_display = [os.path.basename(expanded[0].rstrip("/"))]
-        else:
-            prefix = os.path.commonpath(expanded)
-            auto_display = [os.path.relpath(ep, prefix) for ep in expanded]
-        auto_items = list(zip(auto_display, auto_paths))
-    else:
-        auto_items = []
-    # Preserve original order
-    result = []
-    auto_idx = 0
-    for line in lines:
-        if "|" in line:
-            name, path = line.split("|", 1)
-            result.append((name.strip(), path.strip()))
-        else:
-            result.append(auto_items[auto_idx])
-            auto_idx += 1
-    return result
-
-
 def build_exit_triggers(objects, obj_info):
     """Returns (exits, traps, water) — each list[dict] with x, y, w, h."""
     exits = []
@@ -325,92 +269,6 @@ def build_ability_pool(skills):
             pool.extend([ab] * count)
     random.shuffle(pool)
     return pool
-
-
-def wrap_text(text, max_width, indent=0):
-    """Wrap text at word boundaries to fit within max_width pixels.
-    Returns list of (indent_px, line_text) tuples.
-    First line has indent=0, continuation lines have the given indent."""
-    words = text.split(' ')
-    lines = []
-    current_line = ''
-    for word in words:
-        candidate = f"{current_line} {word}".strip()
-        line_indent = indent if lines else 0
-        if text_width(candidate) + line_indent > max_width and current_line:
-            lines.append((indent if len(lines) > 0 else 0, current_line))
-            current_line = word
-        else:
-            current_line = candidate
-    if current_line:
-        lines.append((indent if len(lines) > 0 else 0, current_line))
-    return lines
-
-
-def stamp_menu(world, config, entrance_x, walk_surface_y, water=None, term_cols=80):
-    """Stamp menu text + halo into world. Returns set of text pixel coords."""
-    if not config:
-        return set(), (0, 0, 0, 0)
-
-    line_gap = 3
-    padding = 4
-    max_text_width = (term_cols * 2) - 40  # viewport pixel width minus margin
-
-    # Build wrapped lines: list of (indent_px, text)
-    all_lines = []
-    for i, (label, _path) in enumerate(config):
-        prefix = f"{i + 1}. "
-        prefix_width = text_width(prefix)
-        first_line_text = prefix + label
-        if text_width(first_line_text) <= max_text_width:
-            all_lines.append((0, first_line_text))
-        else:
-            # Wrap: first line has the prefix, continuations are indented
-            wrapped = wrap_text(label, max_text_width - prefix_width, indent=prefix_width)
-            for j, (indent, line_text) in enumerate(wrapped):
-                if j == 0:
-                    all_lines.append((0, prefix + line_text))
-                else:
-                    all_lines.append((indent, line_text))
-
-    menu_h = len(all_lines) * (CHAR_H + line_gap) - line_gap + padding * 2
-    menu_x = entrance_x + 60
-    menu_y = max(2, walk_surface_y - padding)
-    menu_y = min(menu_y, LEVEL_HEIGHT - menu_h - 2)
-
-    # Avoid water zones — shift menu right if overlapping
-    menu_w_estimate = max(text_width(t) + ind for ind, t in all_lines) + padding * 2
-    if water:
-        for _ in range(20):
-            overlaps = False
-            for wz in water:
-                if (menu_x < wz["x"] + wz["w"] and menu_x + menu_w_estimate > wz["x"]
-                        and menu_y < wz["y"] + wz["h"] + 6 and menu_y + menu_h > wz["y"]):
-                    overlaps = True
-                    menu_x = wz["x"] + wz["w"] + 10
-                    break
-            if not overlaps:
-                break
-
-    menu_w = menu_w_estimate
-
-    text_color = (240, 240, 0)
-    all_text_pixels = set()
-    for i, (indent, label) in enumerate(all_lines):
-        ty = menu_y + padding + i * (CHAR_H + line_gap)
-        cx = menu_x + padding + indent
-        pixels = stamp_text(world, cx, ty, label, text_color)
-        all_text_pixels |= pixels
-
-    # Visual halo — clear visual only (not solid) around text
-    for tx, ty in all_text_pixels:
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                px, py = tx + dx, ty + dy
-                if (px, py) not in all_text_pixels:
-                    world.clear_visual(px, py)
-
-    return all_text_pixels, (menu_x, menu_y, menu_w, menu_h)
 
 
 # ── Lemming class ────────────────────────────────────────────────────────────
@@ -1034,17 +892,25 @@ def braille_cell_fast(canvas, overlay, wpx, wpy):
 # ── Game loop ────────────────────────────────────────────────────────────────
 
 def game_loop(world, exits, traps, water, exit_center, entrances, pool,
-              text_pixel_coords, config, header, tty_fd, palette, menu_rect=None):
-    """Run the game loop. Returns selected path or None."""
+              header, tty_fd, palette,
+              focus_x=None, text_pixel_coords=None, exclude_rect=None,
+              handle_key=None, after_frame=None):
+    """Run the game loop.
+    focus_x: world-pixel x to center viewport on (default: first entrance).
+    text_pixel_coords: list of (x,y) for mischievous lemming targeting.
+    exclude_rect: (x,y,w,h) to exclude from animated object rendering.
+    handle_key(byte): input callback, returns result value or None.
+    after_frame(tty_out): post-render hook. Presence reserves bottom terminal row.
+    Returns: result from handle_key, or None if quit.
+    """
     tty_out = os.fdopen(os.dup(tty_fd), "w")
 
     # Get terminal size from /dev/tty, not stdout (which may be a pipe)
     buf = fcntl.ioctl(tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
     rows, cols = struct.unpack('HHHH', buf)[:2]
     tw = cols
-    standalone = any(path is None for _, path in config)
-    if standalone:
-        th = rows - 2  # reserve last row for hint bar
+    if after_frame:
+        th = rows - 2  # reserve bottom row for after_frame hook
     else:
         th = rows - 1
     view_ph = min(th * 4, LEVEL_HEIGHT)
@@ -1055,8 +921,8 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     level_tw = LEVEL_WIDTH // 2
     level_th = LEVEL_HEIGHT // 4
 
-    # Use menu rect from stamp_menu for viewport centering
-    menu_x, _menu_y, menu_w, _menu_h = menu_rect
+    # Viewport centering
+    _focus_x = focus_x if focus_x is not None else entrances[0]["spawn_x"]
 
     MAX_LEMMINGS = header["num_lemmings"]
     SPAWN_INTERVAL = max(10, 100 - header["release_rate"])
@@ -1064,26 +930,16 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     world.lemmings = lemmings  # shared reference for blocker collision
     tps = 22
     prev_dirty = []
-    selected = None
-    selected_path = None
+    _selection_result = None
     game_tick = 0
     spawned = 0
     cam_offset = 0
     last_vx = -999
     quit_no_selection = False
 
-    valid_keys = ''.join(str(i + 1) for i in range(min(len(config), 9)))
-
     # Alt screen + hidden cursor
     tty_out.write("\033[?25l\033[?1049h")
     tty_out.flush()
-
-    if standalone:
-        hint = "Run ./setup to use Braillings as a directory picker"
-        hint_col = max(1, (cols - len(hint)) // 2)
-        hint_ansi = f"\033[{rows};1H\033[2K\033[{rows};{hint_col}H\033[2m{hint}\033[0m"
-        tty_out.write(hint_ansi)
-        tty_out.flush()
 
     old_settings = termios.tcgetattr(tty_fd)
     try:
@@ -1095,7 +951,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
 
             # Spawn lemmings — round-robin across entrances (after entrance opens)
             ENTRANCE_OPEN_TICK = 60  # delay + animation time
-            if (selected is None and spawned < MAX_LEMMINGS
+            if (_selection_result is None and spawned < MAX_LEMMINGS
                     and game_tick > ENTRANCE_OPEN_TICK
                     and game_tick % SPAWN_INTERVAL == 0):
                 ent = entrances[spawned % len(entrances)]
@@ -1137,16 +993,16 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
                         quit_no_selection = True; break
                     elif buf[i:i + 1] in (b'\x03', b'q'):
                         quit_no_selection = True; break
-                    elif selected is None and chr(buf[i]) in valid_keys:
-                        idx = buf[i] - ord('1')
-                        selected = idx
-                        selected_path = config[idx][1]
-                        for lem in lemmings:
-                            if not lem.dead and not lem.exited:
-                                lem.state = "ohno"
-                                lem.frame = 0
-                                lem.tick = 0
-                                lem.bomb_timer = 0
+                    elif handle_key and _selection_result is None:
+                        result = handle_key(buf[i])
+                        if result is not None:
+                            _selection_result = result
+                            for lem in lemmings:
+                                if not lem.dead and not lem.exited:
+                                    lem.state = "ohno"
+                                    lem.frame = 0
+                                    lem.tick = 0
+                                    lem.bomb_timer = 0
                         i += 1
                     else:
                         i += 1
@@ -1159,7 +1015,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
                 lem.update(exits, traps, water)
 
             # Viewport
-            vx = max(0, min(menu_x + menu_w // 2 - view_pw // 2 + cam_offset,
+            vx = max(0, min(_focus_x - view_pw // 2 + cam_offset,
                             LEVEL_WIDTH - view_pw))
             vy = 0
             vx_cell = vx // 2
@@ -1187,7 +1043,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
 
             # Stamp animated objects then lemmings
             new_dirty = []
-            obj_overlay = stamp_objects(world, game_tick, palette, menu_rect)
+            obj_overlay = stamp_objects(world, game_tick, palette, exclude_rect)
             visible_lems = [l for l in lemmings if not l.dead and not l.exited]
             lem_overlay = stamp_lemmings(visible_lems) if visible_lems else {}
             # Merge: lemmings draw on top of objects
@@ -1223,13 +1079,11 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
             tty_out.write("".join(out))
             tty_out.flush()
 
-            # Redraw hint bar every frame (dirty-cell updates may overwrite it)
-            if standalone:
-                tty_out.write(hint_ansi)
-                tty_out.flush()
+            if after_frame:
+                after_frame(tty_out)
 
             # Exit after all lemmings are done exploding
-            if selected is not None and alive_count == 0:
+            if _selection_result is not None and alive_count == 0:
                 time.sleep(0.5)
                 break
 
@@ -1244,21 +1098,14 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
         tty_out.flush()
         tty_out.close()
 
-    return selected_path
+    return _selection_result
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
-
-def main():
-    config = load_config()
-    if not config:
-        try:
-            with open("/dev/tty", "w") as t:
-                t.write("braillings: config file is empty. Add entries or delete it for standalone mode.\n")
-        except OSError:
-            pass
-        return None
-
+def prepare_level():
+    """Load a random level and compose the world.
+    Does NOT call pre_render_braille — caller does that after any menu stamping.
+    Returns: (world, exits, traps, water, exit_center, entrances, pool, header, palette)
+    """
     level = random.choice(_LEVELS)
     header, objects, terrain_pieces, steel = (
         level["header"], level["objects"], level["terrain"], level["steel"])
@@ -1296,46 +1143,27 @@ def main():
     # Mark entrance objects as playing their opening animation once
     for ao in getattr(world, 'anim_objects', []):
         if ao["obj_id"] == 1:
-            ao["play_once"] = True  # play opening anim then hold last frame
+            ao["play_once"] = True
             ao["started_tick"] = 0
-
-    # Use first entrance for menu placement and walk surface
-    spawn_x = entrances[0]["spawn_x"]
-    spawn_y = entrances[0]["spawn_y"]
-
-    walk_surface_y = spawn_y
-    for y in range(spawn_y, LEVEL_HEIGHT):
-        if world.canvas[y][spawn_x] is not None:
-            walk_surface_y = y - 1
-            break
-
-    # Get terminal width for menu wrapping
-    try:
-        _tty_fd_tmp = os.open("/dev/tty", os.O_RDONLY)
-        _buf = fcntl.ioctl(_tty_fd_tmp, termios.TIOCGWINSZ, b'\x00' * 8)
-        _term_cols = struct.unpack('HHHH', _buf)[1]
-        os.close(_tty_fd_tmp)
-    except OSError:
-        _term_cols = 80
-
-    text_pixels, menu_rect = stamp_menu(world, config, entrances[0]["x"], walk_surface_y, water, _term_cols)
-    text_pixel_coords = list(text_pixels)
-    world.pre_render_braille()
 
     pool = build_ability_pool(header["skills"])
 
+    return world, exits, traps, water, exit_center, entrances, pool, header, palette
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    """Run Braillings as a terminal diorama — watch lemmings navigate a level."""
+    world, exits, traps, water, exit_center, entrances, pool, header, palette = prepare_level()
+    world.pre_render_braille()
+
     tty_fd = os.open("/dev/tty", os.O_RDWR)
     try:
-        selected_path = game_loop(
-            world, exits, traps, water, exit_center, entrances,
-            pool, text_pixel_coords, config, header, tty_fd, palette, menu_rect)
+        game_loop(world, exits, traps, water, exit_center, entrances, pool,
+                  header, tty_fd, palette)
     finally:
         os.close(tty_fd)
-
-    if selected_path:
-        print(os.path.expanduser(selected_path), end='', flush=True)
-
-    return selected_path
 
 
 if __name__ == "__main__":
