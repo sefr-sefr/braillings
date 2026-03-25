@@ -1,10 +1,8 @@
 """
-Braillings — a terminal directory picker rendered as a DOS Lemmings diorama.
-Renders levels in braille characters with ANSI truecolor. Menu items become
-solid platforms that lemmings walk on. Press a number key to select.
-Standalone mode: Pink Floyd songs as fun labels (no config needed).
-Directory mode: real paths via ~/.config/braillings/config.
-All rendering to /dev/tty; stdout reserved for the selected path only.
+Braillings — a terminal diorama rendered as a DOS Lemmings level.
+Renders levels in braille characters with ANSI truecolor.
+Watch lemmings navigate terrain, use abilities, and find the exit.
+Game engine + diorama viewer. No menus, no config, no launcher logic.
 """
 import os, sys, time, struct, tty, termios, select, random, fcntl
 
@@ -23,17 +21,6 @@ PARTICLE_COLORS = _data["particle_colors"]
 _LEVELS = _data["levels"]
 _ASSETS = _data["assets"]
 del _data
-from braillings_font import FONT, CHAR_H, CHAR_GAP, text_width, stamp_text
-
-STANDALONE_LABELS = [
-    ("Several Species of Small Furry Animals Gathered Together in a Cave", None),
-    ("Careful with That Axe, Eugene", None),
-    ("Alan's Psychedelic Breakfast", None),
-    ("Set the Controls for the Heart of the Sun", None),
-    ("Is There Anybody Out There?", None),
-    ("Come In Number 51, Your Time Is Up", None),
-]
-
 LEVEL_WIDTH = 1584
 LEVEL_HEIGHT = 160
 
@@ -251,49 +238,6 @@ def composite_level(world, header, objects, terrain_pieces, steel,
 
 # ── Helper functions ─────────────────────────────────────────────────────────
 
-def load_config():
-    """Read ~/.config/braillings/config. Returns list of (display_name, full_path).
-    Falls back to Pink Floyd song labels in standalone mode (path=None)."""
-    config_path = os.path.expanduser("~/.config/braillings/config")
-    if not os.path.exists(config_path):
-        return list(STANDALONE_LABELS)
-    with open(config_path, "r") as f:
-        lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-    if not lines:
-        return list(STANDALONE_LABELS)
-    # Parse lines: "name|path" or just "path"
-    explicit = []
-    auto_paths = []
-    for line in lines:
-        if "|" in line:
-            name, path = line.split("|", 1)
-            explicit.append((name.strip(), path.strip()))
-        else:
-            auto_paths.append(line)
-    # Derive display names for paths without explicit names
-    if auto_paths:
-        expanded = [os.path.expanduser(p) for p in auto_paths]
-        if len(expanded) == 1:
-            auto_display = [os.path.basename(expanded[0].rstrip("/"))]
-        else:
-            prefix = os.path.commonpath(expanded)
-            auto_display = [os.path.relpath(ep, prefix) for ep in expanded]
-        auto_items = list(zip(auto_display, auto_paths))
-    else:
-        auto_items = []
-    # Preserve original order
-    result = []
-    auto_idx = 0
-    for line in lines:
-        if "|" in line:
-            name, path = line.split("|", 1)
-            result.append((name.strip(), path.strip()))
-        else:
-            result.append(auto_items[auto_idx])
-            auto_idx += 1
-    return result
-
-
 def build_exit_triggers(objects, obj_info):
     """Returns (exits, traps, water) — each list[dict] with x, y, w, h."""
     exits = []
@@ -325,92 +269,6 @@ def build_ability_pool(skills):
             pool.extend([ab] * count)
     random.shuffle(pool)
     return pool
-
-
-def wrap_text(text, max_width, indent=0):
-    """Wrap text at word boundaries to fit within max_width pixels.
-    Returns list of (indent_px, line_text) tuples.
-    First line has indent=0, continuation lines have the given indent."""
-    words = text.split(' ')
-    lines = []
-    current_line = ''
-    for word in words:
-        candidate = f"{current_line} {word}".strip()
-        line_indent = indent if lines else 0
-        if text_width(candidate) + line_indent > max_width and current_line:
-            lines.append((indent if len(lines) > 0 else 0, current_line))
-            current_line = word
-        else:
-            current_line = candidate
-    if current_line:
-        lines.append((indent if len(lines) > 0 else 0, current_line))
-    return lines
-
-
-def stamp_menu(world, config, entrance_x, walk_surface_y, water=None, term_cols=80):
-    """Stamp menu text + halo into world. Returns set of text pixel coords."""
-    if not config:
-        return set(), (0, 0, 0, 0)
-
-    line_gap = 3
-    padding = 4
-    max_text_width = (term_cols * 2) - 40  # viewport pixel width minus margin
-
-    # Build wrapped lines: list of (indent_px, text)
-    all_lines = []
-    for i, (label, _path) in enumerate(config):
-        prefix = f"{i + 1}. "
-        prefix_width = text_width(prefix)
-        first_line_text = prefix + label
-        if text_width(first_line_text) <= max_text_width:
-            all_lines.append((0, first_line_text))
-        else:
-            # Wrap: first line has the prefix, continuations are indented
-            wrapped = wrap_text(label, max_text_width - prefix_width, indent=prefix_width)
-            for j, (indent, line_text) in enumerate(wrapped):
-                if j == 0:
-                    all_lines.append((0, prefix + line_text))
-                else:
-                    all_lines.append((indent, line_text))
-
-    menu_h = len(all_lines) * (CHAR_H + line_gap) - line_gap + padding * 2
-    menu_x = entrance_x + 60
-    menu_y = max(2, walk_surface_y - padding)
-    menu_y = min(menu_y, LEVEL_HEIGHT - menu_h - 2)
-
-    # Avoid water zones — shift menu right if overlapping
-    menu_w_estimate = max(text_width(t) + ind for ind, t in all_lines) + padding * 2
-    if water:
-        for _ in range(20):
-            overlaps = False
-            for wz in water:
-                if (menu_x < wz["x"] + wz["w"] and menu_x + menu_w_estimate > wz["x"]
-                        and menu_y < wz["y"] + wz["h"] + 6 and menu_y + menu_h > wz["y"]):
-                    overlaps = True
-                    menu_x = wz["x"] + wz["w"] + 10
-                    break
-            if not overlaps:
-                break
-
-    menu_w = menu_w_estimate
-
-    text_color = (240, 240, 0)
-    all_text_pixels = set()
-    for i, (indent, label) in enumerate(all_lines):
-        ty = menu_y + padding + i * (CHAR_H + line_gap)
-        cx = menu_x + padding + indent
-        pixels = stamp_text(world, cx, ty, label, text_color)
-        all_text_pixels |= pixels
-
-    # Visual halo — clear visual only (not solid) around text
-    for tx, ty in all_text_pixels:
-        for dy in range(-1, 2):
-            for dx in range(-1, 2):
-                px, py = tx + dx, ty + dy
-                if (px, py) not in all_text_pixels:
-                    world.clear_visual(px, py)
-
-    return all_text_pixels, (menu_x, menu_y, menu_w, menu_h)
 
 
 # ── Lemming class ────────────────────────────────────────────────────────────
@@ -1296,119 +1154,16 @@ def prepare_level():
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    config = load_config()
-    if not config:
-        try:
-            with open("/dev/tty", "w") as t:
-                t.write("braillings: config file is empty. Add entries or delete it for standalone mode.\n")
-        except OSError:
-            pass
-        return None
-
-    level = random.choice(_LEVELS)
-    header, objects, terrain_pieces, steel = (
-        level["header"], level["objects"], level["terrain"], level["steel"])
-    gfx_set = header["graphic_set"]
-    assets = _ASSETS[gfx_set]
-    tiles, obj_sprites, palette = assets["tiles"], assets["obj_sprites"], assets["palette"]
-
-    world = World(LEVEL_WIDTH, LEVEL_HEIGHT)
-    world._bulk = True
-    composite_level(world, header, objects, terrain_pieces, steel,
-                    tiles, obj_sprites, palette, assets["obj_info"])
-    world._bulk = False
-
-    exits, traps, water = build_exit_triggers(objects, assets["obj_info"])
-
-    # Exit center for AI targeting
-    exit_obj = None
-    for o in objects:
-        if o["obj_id"] == 0:
-            exit_obj = o
-            break
-    exit_center = (exit_obj["x"] + 24, exit_obj["y"] + 16) if exit_obj else (LEVEL_WIDTH // 2, LEVEL_HEIGHT // 2)
-
-    # Entrances (may be multiple — round-robin spawning)
-    ent_spr = obj_sprites.get(1)
-    entrances = []
-    for o in objects:
-        if o["obj_id"] == 1:
-            sx = o["x"] + (ent_spr["w"] // 2 if ent_spr else 24)
-            sy = o["y"] + (ent_spr["h"] if ent_spr else 25)
-            entrances.append({"x": o["x"], "spawn_x": sx, "spawn_y": sy})
-    if not entrances:
-        entrances = [{"x": 200, "spawn_x": 224, "spawn_y": 45}]
-
-    # Mark entrance objects as playing their opening animation once
-    for ao in getattr(world, 'anim_objects', []):
-        if ao["obj_id"] == 1:
-            ao["play_once"] = True  # play opening anim then hold last frame
-            ao["started_tick"] = 0
-
-    # Use first entrance for menu placement and walk surface
-    spawn_x = entrances[0]["spawn_x"]
-    spawn_y = entrances[0]["spawn_y"]
-
-    walk_surface_y = spawn_y
-    for y in range(spawn_y, LEVEL_HEIGHT):
-        if world.canvas[y][spawn_x] is not None:
-            walk_surface_y = y - 1
-            break
-
-    # Get terminal width for menu wrapping
-    try:
-        _tty_fd_tmp = os.open("/dev/tty", os.O_RDONLY)
-        _buf = fcntl.ioctl(_tty_fd_tmp, termios.TIOCGWINSZ, b'\x00' * 8)
-        _term_cols = struct.unpack('HHHH', _buf)[1]
-        os.close(_tty_fd_tmp)
-    except OSError:
-        _term_cols = 80
-
-    text_pixels, menu_rect = stamp_menu(world, config, entrances[0]["x"], walk_surface_y, water, _term_cols)
-    text_pixel_coords = list(text_pixels)
+    """Run Braillings as a terminal diorama — watch lemmings navigate a level."""
+    world, exits, traps, water, exit_center, entrances, pool, header, palette = prepare_level()
     world.pre_render_braille()
-
-    pool = build_ability_pool(header["skills"])
 
     tty_fd = os.open("/dev/tty", os.O_RDWR)
     try:
-        valid_keys = ''.join(str(i + 1) for i in range(min(len(config), 9)))
-        def _handle_key(byte):
-            ch = chr(byte)
-            if ch in valid_keys:
-                idx = byte - ord('1')
-                return config[idx][1]
-            return None
-
-        standalone = any(path is None for _, path in config)
-        if standalone:
-            hint = "Run ./setup to use Braillings as a directory picker"
-            buf_ws = fcntl.ioctl(tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
-            _rows, _cols = struct.unpack('HHHH', buf_ws)[:2]
-            hint_col = max(1, (_cols - len(hint)) // 2)
-            hint_ansi = f"\033[{_rows};1H\033[2K\033[{_rows};{hint_col}H\033[2m{hint}\033[0m"
-            def _after_frame(tty_out):
-                tty_out.write(hint_ansi)
-                tty_out.flush()
-        else:
-            _after_frame = None
-
-        menu_x, _menu_y, menu_w, _menu_h = menu_rect
-        selected_path = game_loop(
-            world, exits, traps, water, exit_center, entrances,
-            pool, header, tty_fd, palette,
-            focus_x=menu_x + menu_w // 2,
-            text_pixel_coords=text_pixel_coords,
-            exclude_rect=menu_rect,
-            handle_key=_handle_key,
-            after_frame=_after_frame)
+        game_loop(world, exits, traps, water, exit_center, entrances, pool,
+                  header, tty_fd, palette)
     finally:
         os.close(tty_fd)
-
-    if selected_path:
-        print(os.path.expanduser(selected_path), end='', flush=True)
-
-    return selected_path
 
 
 if __name__ == "__main__":
