@@ -643,7 +643,7 @@ class Lemming:
         if self.frame == 9:
             bx = self.x + (0 if self.dir > 0 else -4)
             for i in range(6):
-                px, py = bx + i, self.y - 1
+                px, py = bx + i, self.y
                 self.world.set(px, py, (224, 128, 32))
         if self.frame == 10:
             self.x += self.dir
