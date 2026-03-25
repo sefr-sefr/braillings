@@ -1034,17 +1034,25 @@ def braille_cell_fast(canvas, overlay, wpx, wpy):
 # ── Game loop ────────────────────────────────────────────────────────────────
 
 def game_loop(world, exits, traps, water, exit_center, entrances, pool,
-              text_pixel_coords, config, header, tty_fd, palette, menu_rect=None):
-    """Run the game loop. Returns selected path or None."""
+              header, tty_fd, palette,
+              focus_x=None, text_pixel_coords=None, exclude_rect=None,
+              handle_key=None, after_frame=None):
+    """Run the game loop.
+    focus_x: world-pixel x to center viewport on (default: first entrance).
+    text_pixel_coords: list of (x,y) for mischievous lemming targeting.
+    exclude_rect: (x,y,w,h) to exclude from animated object rendering.
+    handle_key(byte): input callback, returns result value or None.
+    after_frame(tty_out): post-render hook. Presence reserves bottom terminal row.
+    Returns: result from handle_key, or None if quit.
+    """
     tty_out = os.fdopen(os.dup(tty_fd), "w")
 
     # Get terminal size from /dev/tty, not stdout (which may be a pipe)
     buf = fcntl.ioctl(tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
     rows, cols = struct.unpack('HHHH', buf)[:2]
     tw = cols
-    standalone = any(path is None for _, path in config)
-    if standalone:
-        th = rows - 2  # reserve last row for hint bar
+    if after_frame:
+        th = rows - 2  # reserve bottom row for after_frame hook
     else:
         th = rows - 1
     view_ph = min(th * 4, LEVEL_HEIGHT)
@@ -1055,8 +1063,8 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     level_tw = LEVEL_WIDTH // 2
     level_th = LEVEL_HEIGHT // 4
 
-    # Use menu rect from stamp_menu for viewport centering
-    menu_x, _menu_y, menu_w, _menu_h = menu_rect
+    # Viewport centering
+    _focus_x = focus_x if focus_x is not None else entrances[0]["spawn_x"]
 
     MAX_LEMMINGS = header["num_lemmings"]
     SPAWN_INTERVAL = max(10, 100 - header["release_rate"])
@@ -1064,26 +1072,16 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     world.lemmings = lemmings  # shared reference for blocker collision
     tps = 22
     prev_dirty = []
-    selected = None
-    selected_path = None
+    _selection_result = None
     game_tick = 0
     spawned = 0
     cam_offset = 0
     last_vx = -999
     quit_no_selection = False
 
-    valid_keys = ''.join(str(i + 1) for i in range(min(len(config), 9)))
-
     # Alt screen + hidden cursor
     tty_out.write("\033[?25l\033[?1049h")
     tty_out.flush()
-
-    if standalone:
-        hint = "Run ./setup to use Braillings as a directory picker"
-        hint_col = max(1, (cols - len(hint)) // 2)
-        hint_ansi = f"\033[{rows};1H\033[2K\033[{rows};{hint_col}H\033[2m{hint}\033[0m"
-        tty_out.write(hint_ansi)
-        tty_out.flush()
 
     old_settings = termios.tcgetattr(tty_fd)
     try:
@@ -1095,7 +1093,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
 
             # Spawn lemmings — round-robin across entrances (after entrance opens)
             ENTRANCE_OPEN_TICK = 60  # delay + animation time
-            if (selected is None and spawned < MAX_LEMMINGS
+            if (_selection_result is None and spawned < MAX_LEMMINGS
                     and game_tick > ENTRANCE_OPEN_TICK
                     and game_tick % SPAWN_INTERVAL == 0):
                 ent = entrances[spawned % len(entrances)]
@@ -1137,16 +1135,16 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
                         quit_no_selection = True; break
                     elif buf[i:i + 1] in (b'\x03', b'q'):
                         quit_no_selection = True; break
-                    elif selected is None and chr(buf[i]) in valid_keys:
-                        idx = buf[i] - ord('1')
-                        selected = idx
-                        selected_path = config[idx][1]
-                        for lem in lemmings:
-                            if not lem.dead and not lem.exited:
-                                lem.state = "ohno"
-                                lem.frame = 0
-                                lem.tick = 0
-                                lem.bomb_timer = 0
+                    elif handle_key and _selection_result is None:
+                        result = handle_key(buf[i])
+                        if result is not None:
+                            _selection_result = result
+                            for lem in lemmings:
+                                if not lem.dead and not lem.exited:
+                                    lem.state = "ohno"
+                                    lem.frame = 0
+                                    lem.tick = 0
+                                    lem.bomb_timer = 0
                         i += 1
                     else:
                         i += 1
@@ -1159,7 +1157,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
                 lem.update(exits, traps, water)
 
             # Viewport
-            vx = max(0, min(menu_x + menu_w // 2 - view_pw // 2 + cam_offset,
+            vx = max(0, min(_focus_x - view_pw // 2 + cam_offset,
                             LEVEL_WIDTH - view_pw))
             vy = 0
             vx_cell = vx // 2
@@ -1187,7 +1185,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
 
             # Stamp animated objects then lemmings
             new_dirty = []
-            obj_overlay = stamp_objects(world, game_tick, palette, menu_rect)
+            obj_overlay = stamp_objects(world, game_tick, palette, exclude_rect)
             visible_lems = [l for l in lemmings if not l.dead and not l.exited]
             lem_overlay = stamp_lemmings(visible_lems) if visible_lems else {}
             # Merge: lemmings draw on top of objects
@@ -1223,13 +1221,11 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
             tty_out.write("".join(out))
             tty_out.flush()
 
-            # Redraw hint bar every frame (dirty-cell updates may overwrite it)
-            if standalone:
-                tty_out.write(hint_ansi)
-                tty_out.flush()
+            if after_frame:
+                after_frame(tty_out)
 
             # Exit after all lemmings are done exploding
-            if selected is not None and alive_count == 0:
+            if _selection_result is not None and alive_count == 0:
                 time.sleep(0.5)
                 break
 
@@ -1244,7 +1240,7 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
         tty_out.flush()
         tty_out.close()
 
-    return selected_path
+    return _selection_result
 
 
 def prepare_level():
@@ -1376,9 +1372,36 @@ def main():
 
     tty_fd = os.open("/dev/tty", os.O_RDWR)
     try:
+        valid_keys = ''.join(str(i + 1) for i in range(min(len(config), 9)))
+        def _handle_key(byte):
+            ch = chr(byte)
+            if ch in valid_keys:
+                idx = byte - ord('1')
+                return config[idx][1]
+            return None
+
+        standalone = any(path is None for _, path in config)
+        if standalone:
+            hint = "Run ./setup to use Braillings as a directory picker"
+            buf_ws = fcntl.ioctl(tty_fd, termios.TIOCGWINSZ, b'\x00' * 8)
+            _rows, _cols = struct.unpack('HHHH', buf_ws)[:2]
+            hint_col = max(1, (_cols - len(hint)) // 2)
+            hint_ansi = f"\033[{_rows};1H\033[2K\033[{_rows};{hint_col}H\033[2m{hint}\033[0m"
+            def _after_frame(tty_out):
+                tty_out.write(hint_ansi)
+                tty_out.flush()
+        else:
+            _after_frame = None
+
+        menu_x, _menu_y, menu_w, _menu_h = menu_rect
         selected_path = game_loop(
             world, exits, traps, water, exit_center, entrances,
-            pool, text_pixel_coords, config, header, tty_fd, palette, menu_rect)
+            pool, header, tty_fd, palette,
+            focus_x=menu_x + menu_w // 2,
+            text_pixel_coords=text_pixel_coords,
+            exclude_rect=menu_rect,
+            handle_key=_handle_key,
+            after_frame=_after_frame)
     finally:
         os.close(tty_fd)
 
