@@ -1247,6 +1247,56 @@ def game_loop(world, exits, traps, water, exit_center, entrances, pool,
     return selected_path
 
 
+def prepare_level():
+    """Load a random level and compose the world.
+    Does NOT call pre_render_braille — caller does that after any menu stamping.
+    Returns: (world, exits, traps, water, exit_center, entrances, pool, header, palette)
+    """
+    level = random.choice(_LEVELS)
+    header, objects, terrain_pieces, steel = (
+        level["header"], level["objects"], level["terrain"], level["steel"])
+    gfx_set = header["graphic_set"]
+    assets = _ASSETS[gfx_set]
+    tiles, obj_sprites, palette = assets["tiles"], assets["obj_sprites"], assets["palette"]
+
+    world = World(LEVEL_WIDTH, LEVEL_HEIGHT)
+    world._bulk = True
+    composite_level(world, header, objects, terrain_pieces, steel,
+                    tiles, obj_sprites, palette, assets["obj_info"])
+    world._bulk = False
+
+    exits, traps, water = build_exit_triggers(objects, assets["obj_info"])
+
+    # Exit center for AI targeting
+    exit_obj = None
+    for o in objects:
+        if o["obj_id"] == 0:
+            exit_obj = o
+            break
+    exit_center = (exit_obj["x"] + 24, exit_obj["y"] + 16) if exit_obj else (LEVEL_WIDTH // 2, LEVEL_HEIGHT // 2)
+
+    # Entrances (may be multiple — round-robin spawning)
+    ent_spr = obj_sprites.get(1)
+    entrances = []
+    for o in objects:
+        if o["obj_id"] == 1:
+            sx = o["x"] + (ent_spr["w"] // 2 if ent_spr else 24)
+            sy = o["y"] + (ent_spr["h"] if ent_spr else 25)
+            entrances.append({"x": o["x"], "spawn_x": sx, "spawn_y": sy})
+    if not entrances:
+        entrances = [{"x": 200, "spawn_x": 224, "spawn_y": 45}]
+
+    # Mark entrance objects as playing their opening animation once
+    for ao in getattr(world, 'anim_objects', []):
+        if ao["obj_id"] == 1:
+            ao["play_once"] = True
+            ao["started_tick"] = 0
+
+    pool = build_ability_pool(header["skills"])
+
+    return world, exits, traps, water, exit_center, entrances, pool, header, palette
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
