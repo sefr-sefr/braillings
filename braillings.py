@@ -294,7 +294,6 @@ class Lemming:
         self.palette = dict(LEM_PALETTE)
         self.auto_bomb_tick = auto_bomb_tick  # tick at which to self-destruct
         # Ability state tracking
-        self._bash_hit = False
         self._mine_hit = False
         self.build_count = 0
         self._flip_count = 0
@@ -318,7 +317,7 @@ class Lemming:
         ability = which or self.ability
         if ability == 'block':
             # Invisible solid wall — only set collision, no visual
-            for dy in range(-10, 1):
+            for dy in range(-9, 1):
                 for dx in range(-2, 3):
                     px, py = self.x + dx, self.y + dy
                     if 0 <= px < self.world.w and 0 <= py < self.world.h:
@@ -369,7 +368,7 @@ class Lemming:
         if self.state == "walk":
             self._walk(exits, traps, water)
         elif self.state == "fall":
-            self._fall()
+            self._fall(traps, water)
         elif self.state == "bash":
             self._bash()
         elif self.state == "build":
@@ -499,66 +498,77 @@ class Lemming:
                             return
 
         nx = self.x + self.dir
-        if self.world.is_solid(nx, self.y):
-            wh = 0
-            for dy in range(7):
-                if self.world.is_solid(nx, self.y - dy):
-                    wh = dy + 1
-                else:
-                    break  # TODO: removing this break may fix thin-wall sticking (see flip failsafe below)
-            if wh <= 6 and not self.world.is_solid(nx, self.y - wh):
-                self.x, self.y = nx, self.y - wh
-                self._flip_count = 0
-            else:
-                # Wall too tall — check all remaining abilities
-                if self._can_act() and self._facing_target():
-                    if self.mischievous:
-                        self.use_ability('bash')
-                        return
-                    for ab in self.abilities:
-                        if ab in ('bash', 'build', 'mine'):
-                            self.use_ability(ab)
-                            return
-                        if ab == 'climb':
-                            self.use_ability('climb')
-                            return
-                self.dir = -self.dir
-                self._flip_count += 1
-                if self._flip_count >= 6:
-                    self.state = "ohno"
-                    self.frame = 0
-                    self.tick = 0
-            return
 
-        # Look ahead: will moving to nx cause a fall?
-        has_ground_at_nx = self.world.is_solid(nx, self.y + 1)
-        if not has_ground_at_nx:
-            has_ground_at_nx = any(self.world.is_solid(nx, self.y + 1 + dy) for dy in range(1, 4))
+        if not self.world.is_solid(nx, self.y):
+            # No ground at next position — slope down or fall
+            # Look ahead: will moving to nx cause a fall?
+            has_ground = False
+            for dy in range(1, 4):
+                if self.world.is_solid(nx, self.y + dy):
+                    has_ground = True
+                    break
 
-        # Block BEFORE stepping to the edge — stay 2px back
-        if not has_ground_at_nx and self._can_act() and 'block' in self.abilities and not self._facing_target():
-            self.x -= self.dir  # step back from edge
-            self.use_ability('block')
-            return
-
-        self.x = nx
-        self._flip_count = 0
-        if self.world.is_solid(self.x, self.y + 1):
-            return
-        for dy in range(1, 4):
-            if self.world.is_solid(self.x, self.y + 1 + dy):
-                self.y += dy
+            # Block BEFORE stepping to the edge — stay 2px back
+            if not has_ground and self._can_act() and 'block' in self.abilities and not self._facing_target():
+                self.x -= self.dir  # step back from edge
+                self.use_ability('block')
                 return
 
-        # Gap — try build or fall
-        if self._can_act() and 'build' in self.abilities and self._facing_target():
-            self.use_ability('build')
+            self.x = nx
+            self._flip_count = 0
+            if has_ground:
+                # Slope down — snap to ground
+                for dy in range(1, 4):
+                    if self.world.is_solid(self.x, self.y + dy):
+                        self.y += dy
+                        return
+
+            # Gap — try build or fall
+            if self._can_act() and 'build' in self.abilities and self._facing_target():
+                self.use_ability('build')
+            else:
+                self.state = "fall"
+                self.fall_dist = 0
+            return
+
+        if not self.world.is_solid(nx, self.y - 1):
+            # Flat ground — no wall above, just walk
+            self.x = nx
+            self._flip_count = 0
+            return
+
+        # Wall above ground — count height from y-1 upward
+        wh = 0
+        for dy in range(1, 8):
+            if self.world.is_solid(nx, self.y - dy):
+                wh = dy
+            else:
+                break
+        if wh <= 6 and not self.world.is_solid(nx, self.y - wh - 1):
+            self.x, self.y = nx, self.y - wh
+            self._flip_count = 0
         else:
-            self.state = "fall"
-            self.fall_dist = 0
+            # Wall too tall — check all remaining abilities
+            if self._can_act() and self._facing_target():
+                if self.mischievous:
+                    self.use_ability('bash')
+                    return
+                for ab in self.abilities:
+                    if ab in ('bash', 'build', 'mine'):
+                        self.use_ability(ab)
+                        return
+                    if ab == 'climb':
+                        self.use_ability('climb')
+                        return
+            self.dir = -self.dir
+            self._flip_count += 1
+            if self._flip_count >= 6:
+                self.state = "ohno"
+                self.frame = 0
+                self.tick = 0
 
     # --- Fall with float ---
-    def _fall(self):
+    def _fall(self, traps=None, water=None):
         if self.tick % 2 == 0:
             self.frame = (self.frame + 1) % 4
         speed = min(self.fall_dist // 8 + 1, 3)
@@ -568,7 +578,27 @@ class Lemming:
         for _ in range(speed):
             self.y += 1
             self.fall_dist += 1
-            if self.world.is_solid(self.x, self.y + 1):
+            # Trap check — burn on contact
+            if traps:
+                for tr in traps:
+                    if (tr["x"] <= self.x <= tr["x"] + tr["w"]
+                            and tr["y"] <= self.y <= tr["y"] + tr["h"] + 6):
+                        self.state = "fried"
+                        self.frame = 0
+                        self.tick = 0
+                        return
+            # Water check — drown at the water surface
+            if water:
+                for wz in water:
+                    if (wz["x"] <= self.x <= wz["x"] + wz["w"]
+                            and wz["y"] <= self.y <= wz["y"] + wz["h"] + 6):
+                        self.state = "drown"
+                        self.y = wz["y"]  # drown at water surface
+                        self.frame = 0
+                        self.tick = 0
+                        return
+            if self.world.is_solid(self.x, self.y):
+                # Landed — y is the ground pixel (OG convention)
                 if self.fall_dist >= 60 and not self.can_float:
                     self.state = "splat"
                     self.frame = 0
@@ -578,11 +608,6 @@ class Lemming:
                     self.state = "walk"
                     self.frame = 0
                 return
-            if self.world.is_solid(self.x, self.y):
-                self.y -= 1
-                self.state = "walk"
-                self.frame = 0
-                return
             if self.y >= LEVEL_HEIGHT + 20:
                 self.dead = True
                 return
@@ -590,34 +615,38 @@ class Lemming:
     # --- Ability states ---
     def _bash(self):
         self.frame = (self.frame + 1) % 32
-        if 2 <= self.frame <= 5:
-            stripe = self.frame - 1
-            for dy in range(-9, 1):
+        idx = self.frame % 16
+        # Clearing: frames 2-5 of each stroke (both strokes active)
+        if 2 <= idx <= 5:
+            stripe = idx - 1
+            for dy in range(-10, 0):
                 px, py = self.x + self.dir * stripe, self.y + dy
                 if self.world.is_solid(px, py):
-                    if self.world.try_clear(px, py, self.dir):
-                        self._bash_hit = True
-                    else:
-                        # Hit steel or one-way — stop bashing
-                        self.state = "walk"; self.frame = 0; return
-                if self.frame == 5:
-                    px2 = self.x + self.dir * 5
+                    if not self.world.try_clear(px, py, self.dir):
+                        self.state = "walk"; self.frame = 0; self.dir = -self.dir; return
+            if idx == 5:
+                for dy in range(-10, 0):
+                    px2, py = self.x + self.dir * 5, self.y + dy
                     if self.world.is_solid(px2, py):
-                        if self.world.try_clear(px2, py, self.dir):
-                            self._bash_hit = True
-                        else:
-                            self.state = "walk"; self.frame = 0; return
+                        if not self.world.try_clear(px2, py, self.dir):
+                            self.state = "walk"; self.frame = 0; self.dir = -self.dir; return
+        # Terrain-ahead check: only on frame 5 (first stroke), like the original
         if self.frame == 5:
-            if not self._bash_hit:
+            has_terrain = False
+            for dx in range(4):
+                if self.world.is_solid(self.x + self.dir * (8 + dx), self.y - 6):
+                    has_terrain = True
+                    break
+            if not has_terrain:
                 self.state = "walk"
                 self.frame = 0
                 return
-            self._bash_hit = False
-        if 11 <= self.frame <= 15:
+        # Movement: frames 11-15 of each stroke (both strokes active)
+        if 11 <= idx <= 15:
             self.x += self.dir
-            if not self.world.is_solid(self.x, self.y + 1):
+            if not self.world.is_solid(self.x, self.y):
                 for dy in range(1, 4):
-                    if self.world.is_solid(self.x, self.y + 1 + dy):
+                    if self.world.is_solid(self.x, self.y + dy):
                         self.y += dy
                         return
                 self.state = "fall"
@@ -635,7 +664,7 @@ class Lemming:
                 return
             self.y -= 1
             self.x += self.dir
-            if self.world.is_solid(self.x, self.y - 8):
+            if self.world.is_solid(self.x, self.y - 9):
                 self.state = "walk"
                 self.frame = 0
                 self.dir = -self.dir
@@ -643,7 +672,7 @@ class Lemming:
         if self.frame == 9:
             bx = self.x + (0 if self.dir > 0 else -4)
             for i in range(6):
-                px, py = bx + i, self.y
+                px, py = bx + i, self.y - 1
                 self.world.set(px, py, (224, 128, 32))
         if self.frame == 10:
             self.x += self.dir
@@ -668,9 +697,9 @@ class Lemming:
             self.frame = (self.frame + 1) % 8
         if self.tick >= 8:
             self.x += self.dir
-            if not self.world.is_solid(self.x, self.y + 1):
+            if not self.world.is_solid(self.x, self.y):
                 for dy in range(1, 5):
-                    if self.world.is_solid(self.x, self.y + 1 + dy):
+                    if self.world.is_solid(self.x, self.y + dy):
                         self.y += dy
                         break
             self.state = "walk"
@@ -680,13 +709,13 @@ class Lemming:
         self.frame = (self.frame + 1) % 16
         if self.frame != 0 and self.frame != 8:
             return
-        if self.y + 1 >= LEVEL_HEIGHT:
+        if self.y >= LEVEL_HEIGHT:
             self.dead = True
             return
         any_solid = False
         any_cleared = False
         for dx in range(-4, 5):
-            px, py = self.x + dx, self.y + 1
+            px, py = self.x + dx, self.y
             if self.world.is_solid(px, py):
                 any_solid = True
                 if self.world.clear(px, py):
@@ -703,13 +732,13 @@ class Lemming:
 
     def _mine(self):
         self.frame = (self.frame + 1) % 24
-        if self.y + 1 >= LEVEL_HEIGHT:
+        if self.y >= LEVEL_HEIGHT:
             self.dead = True
             return
         if self.frame == 0:
             self._mine_hit = False
         if self.frame in (1, 2):
-            for dy in range(-1, 5):
+            for dy in range(-2, 4):
                 for dx in range(-1, 3):
                     px = self.x + self.dir * (dx + self.frame)
                     py = self.y + dy
@@ -720,7 +749,7 @@ class Lemming:
                             # Hit steel or one-way — stop mining
                             self.state = "walk"; self.frame = 0; return
         if self.frame == 2 and not self._mine_hit:
-            if not self.world.is_solid(self.x, self.y + 1):
+            if not self.world.is_solid(self.x, self.y):
                 self.state = "fall"
                 self.fall_dist = 0
             else:
@@ -812,6 +841,7 @@ def stamp_objects(world, game_tick, palette, menu_rect=None):
             fi = 0
         frame = frames[fi]
         ox, oy = obj["x"], obj["y"]
+        oy += 4  # all object sprites sit 4px above terrain in raw DOS data
         for py in range(obj["h"]):
             for px in range(obj["w"]):
                 idx = frame[py][px]
