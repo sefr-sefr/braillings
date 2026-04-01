@@ -2,6 +2,10 @@
 
 DOS Lemmings in your terminal, rendered in braille characters. Watch lemmings spawn, navigate levels autonomously, and interact with terrain. Pan with arrow keys, quit with Esc.
 
+![Diorama mode](assets/diorama.png)
+
+![Directory launcher](assets/launcher.png)
+
 ## Quick Start
 
 ```bash
