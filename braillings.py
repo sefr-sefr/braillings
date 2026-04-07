@@ -38,7 +38,7 @@ SPRITE_OFFSETS = {
     'walk_r': (-8, -10), 'walk_l': (-8, -10), 'fall_r': (-8, -10), 'fall_l': (-8, -10),
     'exit': (-8, -13), 'ohno': (-8, -10), 'splat': (-8, -10), 'explosion': (-8, -10),
     'bash_r': (-8, -10), 'bash_l': (-8, -10),
-    'build_r': (-8, -13), 'build_l': (-8, -13),
+    'build_r': (-8, -12), 'build_l': (-8, -12),
     'mine_r': (-8, -12), 'mine_l': (-8, -12),
     'climb_r': (-8, -12), 'climb_l': (-8, -12),
     'postclimb_r': (-8, -12), 'postclimb_l': (-8, -12),
@@ -188,13 +188,14 @@ def composite_level(world, header, objects, terrain_pieces, steel,
                 else:
                     world.set(wx, wy, color)
 
-    # Steel: indestructible solid, but invisible (visual comes from terrain tiles underneath)
+    # Steel: makes existing terrain indestructible — only flag pixels already solid
     for s in steel:
         for sy in range(s["h"]):
             for sx in range(s["w"]):
                 px, py = s["x"] + sx, s["y"] + sy
                 if 0 <= px < world.w and 0 <= py < world.h:
-                    world.terrain[py][px] |= SOLID | STEEL
+                    if world.terrain[py][px] & SOLID:
+                        world.terrain[py][px] |= STEEL
 
     # Objects are rendered dynamically each tick (animated), not stamped here.
     # Store object data on the world for the renderer.
@@ -290,7 +291,7 @@ class Lemming:
         self.target_xy = target_xy
         self.exit_xy = exit_xy
         self.revealed = False
-        self.can_float = 'float' in self.abilities
+        self.can_float = 'float' in self.abilities or mischievous
         self.palette = dict(LEM_PALETTE)
         self.auto_bomb_tick = auto_bomb_tick  # tick at which to self-destruct
         # Ability state tracking
@@ -316,13 +317,8 @@ class Lemming:
     def use_ability(self, which=None):
         ability = which or self.ability
         if ability == 'block':
-            # Invisible solid wall — only set collision, no visual
-            for dy in range(-9, 1):
-                for dx in range(-2, 3):
-                    px, py = self.x + dx, self.y + dy
-                    if 0 <= px < self.world.w and 0 <= py < self.world.h:
-                        self.world.terrain[py][px] |= SOLID
-                        # Don't touch canvas or braille — wall is invisible
+            # OG blocker: force-field zone, not terrain. Walkers check
+            # blocker proximity directly via world.lemmings.
             self.state = 'block'
             self.frame = 0
             self.tick = 0
@@ -440,6 +436,26 @@ class Lemming:
         if self.tick >= 28:
             self.dead = True
 
+    def _check_blocker_field(self):
+        """OG blocker: force-left/force-right zones at 4px resolution.
+        FORCELEFT (left of blocker): walkers going right turn around.
+        FORCERIGHT (right of blocker): walkers going left turn around.
+        Walkers already heading away are unaffected."""
+        for other in self.world.lemmings:
+            if other is self or other.dead or other.state != 'block':
+                continue
+            dx = self.x - other.x
+            if abs(dx) <= 6 and abs(self.y - other.y) <= 8:
+                if dx <= 0 and self.dir == 1:
+                    # In FORCELEFT zone, going right → turn left
+                    self.dir = -1
+                    return True
+                if dx >= 0 and self.dir == -1:
+                    # In FORCERIGHT zone, going left → turn right
+                    self.dir = 1
+                    return True
+        return False
+
     # --- Walk with AI triggers ---
     def _walk(self, exits, traps=None, water=None):
         if self.tick % 2 == 0:
@@ -483,12 +499,20 @@ class Lemming:
                     self.tick = 0
                     return
 
+        # Near target — explode to destroy text
+        if self.mischievous and self.bomb_timer < 0:
+            tx, ty = self._get_target()
+            if abs(self.x - tx) < 8 and abs(self.y - ty) < 8:
+                self.bomb_timer = 5
+                self.bomb_tick = 0
+                return
+
         # Position trigger: dig/mine when target is below
         if self._can_act():
             tx, ty = self._get_target()
             if ty > self.y + 10 and abs(self.x - tx) < 30:
                 if self.mischievous:
-                    self.use_ability('dig')
+                    self.use_ability(random.choice(['dig', 'mine']))
                     return
                 else:
                     # Check all remaining abilities for dig/mine
@@ -521,6 +545,7 @@ class Lemming:
                 for dy in range(1, 4):
                     if self.world.is_solid(self.x, self.y + dy):
                         self.y += dy
+                        self._check_blocker_field()
                         return
 
             # Gap — try build or fall
@@ -535,6 +560,7 @@ class Lemming:
             # Flat ground — no wall above, just walk
             self.x = nx
             self._flip_count = 0
+            self._check_blocker_field()
             return
 
         # Wall above ground — count height from y-1 upward
@@ -547,11 +573,12 @@ class Lemming:
         if wh <= 6 and not self.world.is_solid(nx, self.y - wh - 1):
             self.x, self.y = nx, self.y - wh
             self._flip_count = 0
+            self._check_blocker_field()
         else:
             # Wall too tall — check all remaining abilities
             if self._can_act() and self._facing_target():
                 if self.mischievous:
-                    self.use_ability('bash')
+                    self.use_ability(random.choice(['bash', 'mine']))
                     return
                 for ab in self.abilities:
                     if ab in ('bash', 'build', 'mine'):
@@ -672,7 +699,7 @@ class Lemming:
         if self.frame == 9:
             bx = self.x + (0 if self.dir > 0 else -4)
             for i in range(6):
-                px, py = bx + i, self.y - 1
+                px, py = bx + i, self.y
                 self.world.set(px, py, (224, 128, 32))
         if self.frame == 10:
             self.x += self.dir
@@ -855,10 +882,10 @@ def stamp_objects(world, game_tick, palette, menu_rect=None):
 # 3x5 pixel digits for bomb countdown
 _DIGITS = {
     1: ["X.","X.","X.","X.","X."],
-    2: ["XX","X.","XX",".X","XX"],
+    2: ["XX",".X","XX","X.","XX"],
     3: ["XX",".X","XX",".X","XX"],
     4: ["X.",".X","XX",".X",".X"],
-    5: ["XX",".X","XX","X.","XX"],
+    5: ["XX","X.","XX",".X","XX"],
 }
 
 def stamp_lemmings(lemmings):
@@ -1158,12 +1185,11 @@ def prepare_level():
     exit_center = (exit_obj["x"] + 24, exit_obj["y"] + 16) if exit_obj else (LEVEL_WIDTH // 2, LEVEL_HEIGHT // 2)
 
     # Entrances (may be multiple — round-robin spawning)
-    ent_spr = obj_sprites.get(1)
     entrances = []
     for o in objects:
         if o["obj_id"] == 1:
-            sx = o["x"] + (ent_spr["w"] // 2 if ent_spr else 24)
-            sy = o["y"] + (ent_spr["h"] if ent_spr else 25)
+            sx = o["x"] + 24  # OG hardcoded spawn offset
+            sy = o["y"] + 14  # OG hardcoded spawn offset
             entrances.append({"x": o["x"], "spawn_x": sx, "spawn_y": sy})
     if not entrances:
         entrances = [{"x": 200, "spawn_x": 224, "spawn_y": 45}]
