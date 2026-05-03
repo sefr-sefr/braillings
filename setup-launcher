@@ -188,17 +188,17 @@ detect_shells() {
     local current_shell
     current_shell="$(basename "$SHELL")"
 
-    if [[ "$current_shell" == "bash" ]] || [[ -f "$HOME/.bashrc" ]]; then
-        SHELL_FILES+=("$HOME/.bashrc")
-    fi
-    if [[ "$current_shell" == "zsh" ]] || [[ -f "$HOME/.zshrc" ]]; then
-        SHELL_FILES+=("$HOME/.zshrc")
-    fi
-
-    if [[ ${#SHELL_FILES[@]} -eq 0 ]]; then
-        echo -e "${YELLOW}Could not detect shell config files.${RESET}"
-        echo "You'll need to add the shell integration manually."
-    fi
+    # Only write to the user's actual login shell. Touching the other rc file
+    # leaves dead-code installs that drift out of sync (different snippet
+    # shapes from re-running setup, hand-edits, etc.).
+    case "$current_shell" in
+        bash) SHELL_FILES+=("$HOME/.bashrc") ;;
+        zsh)  SHELL_FILES+=("$HOME/.zshrc") ;;
+        *)
+            echo -e "${YELLOW}Unrecognized shell: \$SHELL=$SHELL${RESET}"
+            echo "You'll need to add the shell integration manually."
+            ;;
+    esac
 }
 
 generate_shell_snippet() {
@@ -207,23 +207,11 @@ generate_shell_snippet() {
         claude_line=$'\n        claude'
     fi
 
-    if [[ "$LAUNCH_MODE" == "terminal" ]]; then
-        cat <<SNIPPET
-$MARKER_START
-# Skip in Warp: it routes shell-startup output into a block that ignores keystrokes.
-if [[ \$- == *i* ]] && [[ -z "\$_BRAILLINGS_DONE" ]] && [[ "\$TERM_PROGRAM" != "WarpTerminal" ]]; then
-    export _BRAILLINGS_DONE=1
-    _br_result=\$(python3 "$BRAILLINGS_PY" 2>>"\$HOME/.config/braillings/error.log")
-    if [ -n "\$_br_result" ]; then
-        cd "\$_br_result"${claude_line}
-    fi
-    unset _br_result
-fi
-$MARKER_END
-SNIPPET
-    elif [[ "$LAUNCH_MODE" == "manual" ]]; then
-        cat <<SNIPPET
-$MARKER_START
+    # Function definition is shared by both modes — terminal mode adds an
+    # auto-launch block on top. Always defining the function means Warp users
+    # (where auto-launch is skipped) can still type 'braillings' to invoke.
+    local function_def
+    function_def=$(cat <<SNIPPET
 braillings() {
     local _br_result
     _br_result=\$(python3 "$BRAILLINGS_PY" 2>>"\$HOME/.config/braillings/error.log")
@@ -231,6 +219,26 @@ braillings() {
         cd "\$_br_result"${claude_line}
     fi
 }
+SNIPPET
+)
+
+    if [[ "$LAUNCH_MODE" == "terminal" ]]; then
+        cat <<SNIPPET
+$MARKER_START
+$function_def
+# Auto-launch on first interactive shell. _BRAILLINGS_DONE prevents re-firing
+# on subshells. Skipped in Warp because Warp routes shell-startup output into
+# a block that doesn't pass keystrokes through to the launcher.
+if [[ \$- == *i* ]] && [[ -z "\$_BRAILLINGS_DONE" ]] && [[ "\$TERM_PROGRAM" != "WarpTerminal" ]]; then
+    export _BRAILLINGS_DONE=1
+    braillings
+fi
+$MARKER_END
+SNIPPET
+    elif [[ "$LAUNCH_MODE" == "manual" ]]; then
+        cat <<SNIPPET
+$MARKER_START
+$function_def
 $MARKER_END
 SNIPPET
     fi

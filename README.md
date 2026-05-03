@@ -33,7 +33,7 @@ Setup will:
 
 ### Warp Terminal
 
-Auto-launch is intentionally skipped in [Warp](https://www.warp.dev). Warp routes anything that runs during shell startup into an output block that doesn't pass keystrokes through, so the launcher would render but ignore your input. The shell snippet checks `$TERM_PROGRAM` and bails out under Warp; the `braillings` function (manual mode) is still defined, so you can type `braillings` once the prompt appears and it works normally.
+Auto-launch is intentionally skipped in [Warp](https://www.warp.dev). Warp routes anything that runs during shell startup into a block that doesn't pass keystrokes through, so the launcher would render but ignore your input. The shell snippet checks `$TERM_PROGRAM` and skips the auto-invoke under Warp. The `braillings` function is still defined, so you can type `braillings` once the prompt appears — at that point Warp treats it as a regular command and forwards keys normally.
 
 ## Requirements
 
