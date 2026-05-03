@@ -210,7 +210,8 @@ generate_shell_snippet() {
     if [[ "$LAUNCH_MODE" == "terminal" ]]; then
         cat <<SNIPPET
 $MARKER_START
-if [[ \$- == *i* ]] && [[ -z "\$_BRAILLINGS_DONE" ]]; then
+# Skip in Warp: it routes shell-startup output into a block that ignores keystrokes.
+if [[ \$- == *i* ]] && [[ -z "\$_BRAILLINGS_DONE" ]] && [[ "\$TERM_PROGRAM" != "WarpTerminal" ]]; then
     export _BRAILLINGS_DONE=1
     _br_result=\$(python3 "$BRAILLINGS_PY" 2>>"\$HOME/.config/braillings/error.log")
     if [ -n "\$_br_result" ]; then
