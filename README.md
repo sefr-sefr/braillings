@@ -31,6 +31,10 @@ Setup will:
 - Optionally start Claude in the selected directory
 - Show you exactly what it adds to your shell config before changing anything
 
+### Warp Terminal
+
+Auto-launch is intentionally skipped in [Warp](https://www.warp.dev). Warp routes anything that runs during shell startup into a block that doesn't pass keystrokes through, so the launcher would render but ignore your input. The shell snippet checks `$TERM_PROGRAM` and skips the auto-invoke under Warp. The `braillings` function is still defined, so you can type `braillings` once the prompt appears — at that point Warp treats it as a regular command and forwards keys normally.
+
 ## Requirements
 
 - Python 3 (stdlib only, no pip packages). Gamedata was baked with Python 3.9.6.
